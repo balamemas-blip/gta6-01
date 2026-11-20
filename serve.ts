@@ -1,52 +1,35 @@
-// Solmar Heat — serve.ts: a tiny static server for game/ (Node 22+,
-// standard library only), so the entry can be played locally without a
-// build step: `node serve.ts` serves game/ on http://localhost:8080.
-import { createReadStream, statSync } from 'node:fs';
+// Solmar Heat — static file server for local playtesting.
+// Serves game/ at http://localhost:8080. Standard library only.
+
 import { createServer } from 'node:http';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-const port = Number(process.argv[2] || 8080);
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
+const here = fileURLToPath(new URL('.', import.meta.url));
+const root = join(here, 'game');
+const types = {
+  '.html': 'text/html',
+  '.js': 'text/javascript',
+  '.mjs': 'text/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
 };
 
-createServer((request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  let pathname;
-  try {
-    pathname = decodeURIComponent(url.pathname);
-  } catch {
-    response.writeHead(400).end('bad request');
+const server = createServer((req, res) => {
+  const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+  const file = join(root, path === '/' ? 'index.html' : path);
+  if (!file.startsWith(root) || !existsSync(file)) {
+    res.writeHead(404);
+    res.end('not found');
     return;
   }
-  if (pathname.endsWith('/')) pathname += 'index.html';
-  const file = resolve(join(root, normalize(pathname)));
-  if (file !== root && !file.startsWith(root + sep)) {
-    response.writeHead(403).end('forbidden');
-    return;
-  }
-  let size;
-  try {
-    size = statSync(file).size;
-  } catch {
-    response.writeHead(404).end('not found');
-    return;
-  }
-  response.writeHead(200, {
-    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-    'content-length': size,
-    'cache-control': 'no-store',
-  });
-  createReadStream(file).pipe(response);
-}).listen(port, '127.0.0.1', () => {
-  console.log(`game/ is on http://localhost:${port}`);
+  res.writeHead(200, { 'content-type': types[extname(file)] || 'application/octet-stream' });
+  res.end(readFileSync(file));
+});
+
+server.listen(8080, () => {
+  console.log('Solmar Heat at http://localhost:8080');
 });

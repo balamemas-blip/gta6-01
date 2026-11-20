@@ -1,116 +1,91 @@
-// Bahia Verde Heat — the police: patrol cars that chase the player and
-// foot cops who close in on foot. Spawn counts follow the wanted level.
-import { WORLD, CAR } from './config.js';
-import { makeCar, KIND_POLICE, carHitsBuilding, resolveCarBuildings, clampToWorld } from './world.js';
-import { damagePlayer } from './player.js';
+// Solmar Heat — the Solmar police.
+// Wanted stars call cops in. Cops chase, ram, and — only when the
+// player is stopped or on foot — hold them for a bust. A fast-moving
+// car can never be busted, and cop top speed is capped below the
+// player's, so escape is always possible.
 
-function spawnCopCar(world, player) {
-  const rng = world.rng;
-  const a = rng() * Math.PI * 2;
-  const d = 620 + rng() * 260;
-  const x = player.x + Math.cos(a) * d;
-  const y = player.y + Math.sin(a) * d;
-  const car = makeCar(2000 + world.cops.length, Math.max(140, Math.min(WORLD.width - 140, x)),
-    Math.max(140, Math.min(WORLD.height - 140, y)), 0, '#1c2733', KIND_POLICE, rng);
-  car.parked = false;
-  car.speed = 0;
-  car.siren = 0;
-  car.foot = false;
-  world.cops.push(car);
-  return car;
+import { CONFIG } from './config.js';
+import { collideBuildings } from './world.js';
+import { hurtPlayer } from './player.js';
+import { sfxBusted, sfxCrash, sfxSiren } from './audio.js';
+
+export function createPolice() {
+  return { cops: [], bustTimer: 0, sirenAt: 0 };
 }
 
-function spawnFootCop(world, player) {
-  const rng = world.rng;
-  const a = rng() * Math.PI * 2;
-  const d = 300 + rng() * 160;
-  const cop = {
-    id: 3000 + world.cops.length,
-    x: Math.max(140, Math.min(WORLD.width - 140, player.x + Math.cos(a) * d)),
-    y: Math.max(140, Math.min(WORLD.height - 140, player.y + Math.sin(a) * d)),
-    angle: 0,
-    speed: 0,
-    foot: true,
-    color: '#1c2733',
-  };
-  world.cops.push(cop);
-  return cop;
+export function wantedTarget(police) {
+  return Math.min(CONFIG.cop.maxActive, police.cops.length);
 }
 
-export function stepPolice(world, player, dt, events) {
-  const wanted = player.wanted;
-  const wantCars = wanted === 0 ? 0 : Math.min(1 + wanted, 5);
-  const cars = world.cops.filter((c) => !c.foot);
-  const feet = world.cops.filter((c) => c.foot);
-  // Spawn patrol cars up to the wanted level's count.
-  if (cars.length < wantCars && world.rng() < dt * 0.9) spawnCopCar(world, player);
-  // Foot cops only when the player is on foot and the heat is on.
-  if (player.onFoot && wanted >= 2 && feet.length < wanted - 1 && world.rng() < dt * 0.8) {
-    spawnFootCop(world, player);
+export function updatePolice(police, player, world, wanted, dt, time) {
+  const desired = wanted === 0 ? 0 : Math.min(1 + wanted, CONFIG.cop.maxActive);
+  // Spawn reinforcements at the map edge, away from the player.
+  while (police.cops.length < desired) {
+    const edge = Math.floor(world.rng() * 4);
+    const W = CONFIG.world;
+    const x = edge === 0 ? 60 : edge === 1 ? W.width - 60 : player.x + (world.rng() < 0.5 ? -500 : 500);
+    const y = edge === 2 ? 60 : edge === 3 ? W.height - W.beachHeight - 60 : player.y + (world.rng() < 0.5 ? -400 : 400);
+    police.cops.push({
+      x: Math.max(40, Math.min(W.width - 40, x)),
+      y: Math.max(40, Math.min(W.height - 60, y)),
+      angle: 0,
+      speed: 0,
+      ramAt: -99,
+    });
   }
-  // Drop extra cops once the heat dies down.
-  if (cars.length > wantCars && world.rng() < dt * 0.5) {
-    const idx = world.cops.findIndex((c) => !c.foot);
-    if (idx >= 0) world.cops.splice(idx, 1);
-  }
-  if (wanted === 0 && feet.length > 0 && world.rng() < dt * 0.5) {
-    const idx = world.cops.findIndex((c) => c.foot);
-    if (idx >= 0) world.cops.splice(idx, 1);
+  while (police.cops.length > desired) police.cops.pop();
+
+  if (wanted > 0 && time - police.sirenAt > 6) {
+    police.sirenAt = time;
+    sfxSiren();
   }
 
-  for (const cop of world.cops) {
-    cop.siren += dt;
-    if (cop.foot) stepFootCop(world, player, cop, dt, events);
-    else stepCopCar(world, player, cop, dt, events);
-  }
-}
-
-function stepCopCar(world, player, cop, dt, events) {
-  const targetAngle = Math.atan2(player.y - cop.y, player.x - cop.x);
-  let diff = targetAngle - cop.angle;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  const topSpeed = CAR.maxSpeed * (0.72 + player.wanted * 0.04);
-  cop.speed = Math.min(topSpeed, cop.speed + CAR.accel * 0.8 * dt);
-  cop.angle += Math.max(-2.4 * dt, Math.min(2.4 * dt, diff));
-  const nx = cop.x + Math.cos(cop.angle) * cop.speed * dt;
-  const ny = cop.y + Math.sin(cop.angle) * cop.speed * dt;
-  if (carHitsBuilding(world, nx, ny)) {
-    // Slide around the block instead of ramming it forever.
-    cop.angle += 1.2 * dt * 4;
-    cop.speed *= 0.6;
-  } else {
-    cop.x = nx;
-    cop.y = ny;
-  }
-  resolveCarBuildings(world, cop);
-  const clamped = clampToWorld(cop.x, cop.y, 30);
-  cop.x = clamped.x;
-  cop.y = clamped.y;
-  // Ram the player's car: damage on a hard hit (at most once a second),
-  // and slow them both down.
-  if (player.inCar) {
-    const d = Math.hypot(cop.x - player.x, cop.y - player.y);
-    if (d < 42 && cop.speed > 120 && player.ramCooldown <= 0) {
-      damagePlayer(world, player, 4, events);
-      player.ramCooldown = 1.5;
-      cop.speed *= 0.25;
-      player.inCar.speed *= 0.7;
-      events.push({ type: 'ram' });
-      world.particles.push({ x: player.x, y: player.y, vx: 0, vy: 0, life: 0.35, max: 0.35, size: 9, color: '#ffd23e', kind: 'spark' });
+  let nearest = Infinity;
+  for (const cop of police.cops) {
+    const dx = player.x - cop.x;
+    const dy = player.y - cop.y;
+    const dist = Math.hypot(dx, dy);
+    nearest = Math.min(nearest, dist);
+    const targetAngle = Math.atan2(dy, dx);
+    let diff = targetAngle - cop.angle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    cop.angle += Math.max(-2.4 * dt, Math.min(2.4 * dt, diff));
+    cop.speed = Math.min(CONFIG.cop.topSpeed, cop.speed + CONFIG.cop.accel * dt);
+    cop.x += Math.cos(cop.angle) * cop.speed * dt;
+    cop.y += Math.sin(cop.angle) * cop.speed * dt;
+    // Cops chase across the city but never through buildings: they
+    // slide around a block instead of driving over its roof.
+    const body = { x: cop.x, y: cop.y, r: 20 };
+    if (collideBuildings(world, body)) {
+      cop.x = body.x;
+      cop.y = body.y;
+      cop.speed *= 0.85;
+    }
+    // A ram hurts and shoves, on a cooldown so it never stunlocks.
+    if (dist < 44 && time - cop.ramAt > CONFIG.cop.ramCooldownSec) {
+      cop.ramAt = time;
+      hurtPlayer(player, CONFIG.cop.ramDamage, time);
+      cop.speed *= 0.5;
+      sfxCrash();
     }
   }
+
+  // Bust: only while the player is stopped (or on foot) and a cop is
+  // right on top of them. A moving car is never busted.
+  const playerSpeed = player.inCar ? Math.abs(player.inCar.speed) : player.moving ? 200 : 0;
+  if (wanted > 0 && nearest < CONFIG.cop.bustRadius && playerSpeed < 12) {
+    police.bustTimer += dt;
+    if (police.bustTimer >= CONFIG.cop.bustHoldSec) {
+      sfxBusted();
+      return 'busted';
+    }
+  } else {
+    police.bustTimer = Math.max(0, police.bustTimer - dt * 2);
+  }
+  return null;
 }
 
-function stepFootCop(world, player, cop, dt, events) {
-  const d = Math.hypot(player.x - cop.x, player.y - cop.y);
-  if (d > 520) return;
-  cop.angle = Math.atan2(player.y - cop.y, player.x - cop.x);
-  const speed = 150;
-  cop.x += Math.cos(cop.angle) * speed * dt;
-  cop.y += Math.sin(cop.angle) * speed * dt;
-  // A foot cop who reaches the player on foot starts shoving them down.
-  if (player.onFoot && d < 30) {
-    damagePlayer(world, player, 6 * dt, events);
-  }
+export function bustProgress(police) {
+  return Math.min(1, police.bustTimer / CONFIG.cop.bustHoldSec);
 }

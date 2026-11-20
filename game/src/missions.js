@@ -1,243 +1,215 @@
-// Bahia Verde Heat — the five story jobs: objectives, progress, rewards
-// and the win. Each job is one step of a small state machine; a job can
-// never soft-lock, because every objective is a place or a count the player
-// can always reach again.
-import { MISSIONS, PLACES, PLAYER } from './config.js';
-import { makeCar, KIND_CIVILIAN } from './world.js';
-import { damagePlayer, nearestCar } from './player.js';
+// Solmar Heat — the five story jobs for Rosa Delgado.
+// A small state machine: each job has steps, each step has a marker on
+// the map and a plain-language objective. Collectibles can be taken in
+// any order, and no step can soft-lock: every step completes by
+// reaching a place, entering a car, or defeating visible rivals.
 
-export function createMissions() {
+import { CITY_NAMES } from './config.js';
+import { randomRoadPoint } from './world.js';
+import { sfxJobDone, sfxPickup } from './audio.js';
+
+export const JOBS = [
+  {
+    name: 'Hot Wheels',
+    brief: 'Rosa needs a ride. Steal any car, then bring it to the garage.',
+    reward: 500,
+  },
+  {
+    name: 'Payday Pickup',
+    brief: 'Three cash drops are waiting around Solmar. Collect them all, in any order.',
+    reward: 1200,
+  },
+  {
+    name: 'Crew Pickup',
+    brief: 'Pick up Milo at the park, then drive him to the Palm Court Safehouse. The cops will notice.',
+    reward: 1800,
+  },
+  {
+    name: 'Dockside Trouble',
+    brief: 'Rivals are muscling in at the Old Docks. Go on foot and settle it.',
+    reward: 2200,
+  },
+  {
+    name: 'The Big Score',
+    brief: 'Hit Solmar First Bank, grab the loot, and lose the heat at the garage.',
+    reward: 5000,
+  },
+];
+
+export function createMissions(world) {
+  const drops = [randomRoadPoint(world), randomRoadPoint(world), randomRoadPoint(world)];
+  const milo = { x: world.roadXs[3], y: world.roadYs[2] };
   return {
-    index: 0, // 0..4, 5 means every job done
-    dropsCollected: 0,
-    evadeTimer: 20,
-    evadeActive: false,
-    rivalsLeft: 0,
-    rivalsSpawned: false,
-    getawaySpawned: false,
+    jobIndex: 0,
+    step: 0,
+    drops: drops.map((d) => ({ ...d, taken: false })),
+    milo,
+    rivals: [],
+    lootGrabbed: false,
+    message: `${CITY_NAMES.boss}: "Danny, I need a wheelman. Five jobs, good pay."`,
+    messageAt: 0,
     done: false,
-    toast: '',
-    toastAt: 0,
   };
 }
 
-export function currentMission(missions) {
-  if (missions.index >= MISSIONS.length) return null;
-  return MISSIONS[missions.index];
-}
-
-// The map marker the objective arrow and minimap point at right now.
-export function missionTarget(world, missions, player) {
-  const m = currentMission(missions);
-  if (!m) return null;
-  if (m.id === 1) {
-    if (player.inCar) return { x: PLACES.garage.x, y: PLACES.garage.y, label: 'Garage' };
-    const car = nearestCar(world, player.x, player.y);
-    if (car) return { x: car.x, y: car.y, label: 'Car' };
-    return { x: PLACES.start.x + 60, y: PLACES.start.y, label: 'Car' };
-  }
-  if (m.id === 2) {
-    const drop = PLACES.drops[missions.dropsCollected];
-    if (drop) return { x: drop.x, y: drop.y, label: 'Cash drop' };
-    return { x: PLACES.garage.x, y: PLACES.garage.y, label: 'Garage' };
-  }
-  if (m.id === 3) return { x: player.x, y: player.y, label: 'Stay clear!' };
-  if (m.id === 4) return { x: PLACES.turf.x, y: PLACES.turf.y, label: 'Rival turf' };
-  if (m.id === 5) {
-    if (!missions.getawaySpawned) return { x: PLACES.garage.x, y: PLACES.garage.y, label: 'Getaway car' };
-    return { x: PLACES.docks.x, y: PLACES.docks.y, label: 'Docks' };
-  }
-  return null;
-}
-
-export function missionProgress(missions) {
-  const m = currentMission(missions);
-  if (!m) return 'All jobs done — Bahia Verde is yours.';
-  if (m.id === 2) return `${missions.dropsCollected} / 3 cash bags`;
-  if (m.id === 3) return `Stay clear: ${Math.ceil(missions.evadeTimer)}s`;
-  if (m.id === 4) return `${6 - missions.rivalsLeft} / 6 rivals down`;
-  if (m.id === 5 && !missions.getawaySpawned) return 'Grab the getaway car at the garage';
-  return m.brief;
-}
-
-function completeMission(world, missions, player, events) {
-  const m = currentMission(missions);
-  if (!m) return;
-  player.cash += m.reward;
-  missions.toast = `Job ${m.id} done! +$${m.reward}`;
-  missions.toastAt = world.time;
-  events.push({ type: 'mission', mission: m.id, reward: m.reward });
-  missions.index += 1;
-  missions.dropsCollected = 0;
-  missions.evadeTimer = 20;
-  missions.evadeActive = false;
-  missions.rivalsSpawned = false;
-  if (missions.index >= MISSIONS.length) {
-    missions.done = true;
-    events.push({ type: 'win' });
+export function currentObjective(m, player) {
+  const job = JOBS[m.jobIndex];
+  if (!job) return 'All jobs done — Solmar is yours.';
+  const onFoot = player && !player.inCar;
+  switch (m.jobIndex) {
+    case 0:
+      return m.step === 0 ? 'Steal a car (walk up to one, press E)' : `Drive the car to ${CITY_NAMES.garage}`;
+    case 1: {
+      const left = m.drops.filter((d) => !d.taken).length;
+      return `Collect the cash drops (${3 - left}/3)`;
+    }
+    case 2:
+      if (m.step === 0) return 'Pick up Milo at the park';
+      return onFoot
+        ? 'Steal a car, then drive Milo to the safehouse'
+        : `Drive Milo to the ${CITY_NAMES.safehouse}`;
+    case 3:
+      return m.step === 0
+        ? 'Get to the Old Docks on foot'
+        : `Deal with the rivals (${m.rivals.filter((r) => r.hp > 0).length} left)`;
+    case 4:
+      if (m.step === 0) return 'Drive to Solmar First Bank';
+      return onFoot
+        ? 'Steal a car, then escape to the garage with the loot'
+        : `Escape to ${CITY_NAMES.garage} with the loot`;
+    default:
+      return job.brief;
   }
 }
 
-function spawnRivals(world) {
-  const rng = world.rng;
-  world.rivals = [];
-  for (let i = 0; i < 6; i += 1) {
-    const a = rng() * Math.PI * 2;
-    const d = 60 + rng() * 160;
-    world.rivals.push({
-      x: PLACES.turf.x + Math.cos(a) * d,
-      y: PLACES.turf.y + Math.sin(a) * d,
-      hp: 2,
-      angle: 0,
-      shootCooldown: 1 + rng(),
-      color: '#7a2a8a',
-      walkPhase: rng() * 6,
-    });
+// The nearest stealable car, as a marker: used whenever a driving step
+// finds the player on foot, so the job never strands them.
+function nearestCarMarker(player, cars) {
+  if (!player || !cars) return [];
+  let best = null;
+  let bestD = Infinity;
+  for (const car of cars) {
+    if (car.isCop || car.occupied) continue;
+    const d = Math.hypot(car.x - player.x, car.y - player.y);
+    if (d < bestD) {
+      bestD = d;
+      best = car;
+    }
   }
+  return best ? [{ x: best.x, y: best.y, label: 'E', kind: 'goal' }] : [];
 }
 
-export function stepMissions(world, missions, player, dt, events) {
-  const m = currentMission(missions);
-  if (!m || missions.done) return;
-
-  if (m.id === 1 && player.inCar) {
-    const d = Math.hypot(player.x - PLACES.garage.x, player.y - PLACES.garage.y);
-    if (d < 90) completeMission(world, missions, player, events);
-  }
-
-  if (m.id === 2) {
-    const drop = PLACES.drops[missions.dropsCollected];
-    if (drop) {
-      const d = Math.hypot(player.x - drop.x, player.y - drop.y);
-      if (d < 46) {
-        missions.dropsCollected += 1;
-        player.cash += 150;
-        events.push({ type: 'pickup', what: 'cash bag' });
-        world.particles.push({ x: drop.x, y: drop.y, vx: 0, vy: -30, life: 0.7, max: 0.7, size: 12, color: '#37d67a', kind: 'ring' });
-        if (missions.dropsCollected >= 3) completeMission(world, missions, player, events);
+// Markers the HUD and minimap draw: {x, y, label, kind}.
+export function missionMarkers(m, world, player, cars) {
+  switch (m.jobIndex) {
+    case 0:
+      if (m.step === 0) {
+        // Point at the nearest stealable car so the first job never
+        // leaves the player wandering.
+        return nearestCarMarker(player, cars);
       }
-    }
-  }
-
-  if (m.id === 3) {
-    if (!missions.evadeActive) {
-      player.wanted = Math.max(player.wanted, 3);
-      missions.evadeActive = true;
-    }
-    let nearestCop = Infinity;
-    for (const cop of world.cops) {
-      nearestCop = Math.min(nearestCop, Math.hypot(cop.x - player.x, cop.y - player.y));
-    }
-    if (nearestCop > 320 || world.cops.length === 0) {
-      missions.evadeTimer -= dt;
-      if (missions.evadeTimer <= 0) completeMission(world, missions, player, events);
-    }
-  }
-
-  if (m.id === 4) {
-    if (!missions.rivalsSpawned) {
-      // The turf fight is a street fight, not a police chase: the heat
-      // drops and the foot cops back off when it starts.
-      player.wanted = 1;
-      world.cops = world.cops.filter((c) => !c.foot);
-      // A checkpoint breather before the fight: Rico patches up.
-      player.hp = PLAYER.hpMax;
-      spawnRivals(world);
-      missions.rivalsSpawned = true;
-      missions.rivalsLeft = 6;
-    }
-    stepRivals(world, player, dt, events);
-    if (missions.rivalsLeft <= 0) completeMission(world, missions, player, events);
-  }
-
-  if (m.id === 5) {
-    if (!missions.getawaySpawned) {
-      const car = makeCar(777, PLACES.getawayCar.x, PLACES.getawayCar.y, 0, '#d84a4a', KIND_CIVILIAN, world.rng);
-      car.parked = true;
-      world.cars.push(car);
-      missions.getawaySpawned = true;
-      player.wanted = Math.max(player.wanted, 4);
-    }
-    const d = Math.hypot(player.x - PLACES.docks.x, player.y - PLACES.docks.y);
-    if (player.inCar && d < 110) completeMission(world, missions, player, events);
+      return [{ x: world.garage.x, y: world.garage.y, label: 'Garage', kind: 'goal' }];
+    case 1:
+      return m.drops.filter((d) => !d.taken).map((d) => ({ x: d.x, y: d.y, label: '$', kind: 'cash' }));
+    case 2:
+      if (m.step === 0) return [{ x: m.milo.x, y: m.milo.y, label: 'Milo', kind: 'person' }];
+      if (player && !player.inCar) return nearestCarMarker(player, cars);
+      return [{ x: world.safehouse.x, y: world.safehouse.y, label: 'Safehouse', kind: 'goal' }];
+    case 3:
+      return m.step === 0
+        ? [{ x: world.docks.x, y: world.docks.y, label: 'Docks', kind: 'goal' }]
+        : m.rivals.filter((r) => r.hp > 0).map((r) => ({ x: r.x, y: r.y, label: '!', kind: 'rival' }));
+    case 4:
+      if (m.step === 0) return [{ x: world.bank.x, y: world.bank.y, label: 'Bank', kind: 'goal' }];
+      if (player && !player.inCar) return nearestCarMarker(player, cars);
+      return [{ x: world.garage.x, y: world.garage.y, label: 'Garage', kind: 'goal' }];
+    default:
+      return [];
   }
 }
 
-// Rivals strafe around the turf and shoot at the player when close.
-function stepRivals(world, player, dt, events) {
-  for (const rival of world.rivals) {
-    if (rival.hp <= 0) continue;
-    const d = Math.hypot(player.x - rival.x, player.y - rival.y);
-    rival.angle = Math.atan2(player.y - rival.y, player.x - rival.x);
-    rival.walkPhase += dt * 6;
-    if (d > 200) {
-      rival.x += Math.cos(rival.angle) * 90 * dt;
-      rival.y += Math.sin(rival.angle) * 90 * dt;
-    } else if (d < 110) {
-      rival.x -= Math.cos(rival.angle) * 60 * dt;
-      rival.y -= Math.sin(rival.angle) * 60 * dt;
-    }
-    rival.shootCooldown -= dt;
-    if (rival.shootCooldown <= 0 && d < 380) {
-      rival.shootCooldown = 1.4 + world.rng() * 1.0;
-      const spread = (world.rng() - 0.5) * 0.5;
-      const a = rival.angle + spread;
-      world.bullets.push({
-        x: rival.x + Math.cos(a) * 20,
-        y: rival.y + Math.sin(a) * 20,
-        vx: Math.cos(a) * 380,
-        vy: Math.sin(a) * 380,
-        life: 1.1,
-        friendly: false,
-      });
-      events.push({ type: 'enemyShot' });
-    }
-  }
+function near(player, x, y, dist) {
+  return Math.hypot(player.x - x, player.y - y) < dist;
 }
 
-// Bullets fly, hit rivals / the player / buildings, and spark out.
-export function stepBullets(world, missions, player, dt, events) {
-  const kept = [];
-  for (const b of world.bullets) {
-    b.x += b.vx * dt;
-    b.y += b.vy * dt;
-    b.life -= dt;
-    if (b.life <= 0) continue;
-    let hit = false;
-    if (b.friendly) {
-      for (const rival of world.rivals) {
-        if (rival.hp > 0 && Math.hypot(rival.x - b.x, rival.y - b.y) < 18) {
-          rival.hp -= PLAYER.bulletDamage;
-          hit = true;
-          world.particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.3, max: 0.3, size: 8, color: '#ff5a5a', kind: 'spark' });
-          if (rival.hp <= 0) {
-            missions.rivalsLeft = Math.max(0, missions.rivalsLeft - 1);
-            events.push({ type: 'rivalDown' });
-          }
-          break;
+function finishJob(m, player) {
+  const job = JOBS[m.jobIndex];
+  player.cash += job.reward;
+  sfxJobDone();
+  m.jobIndex += 1;
+  m.step = 0;
+  m.lootGrabbed = false;
+  if (m.jobIndex >= JOBS.length) {
+    m.done = true;
+    m.message = `${CITY_NAMES.boss}: "That's the whole list, Danny. Solmar is ours."`;
+    return { event: 'won' };
+  }
+  m.message = `${CITY_NAMES.boss}: "${JOBS[m.jobIndex].brief}"`;
+  return { event: 'jobDone', job: job.name, reward: job.reward };
+}
+
+// Runs every frame. Returns { event, wanted } — wanted is the level
+// this job demands right now (0 when the job wants no heat).
+export function updateMissions(m, player, world, dt) {
+  let wanted = 0;
+  if (m.done) return { event: null, wanted: 0 };
+  switch (m.jobIndex) {
+    case 0:
+      if (m.step === 0 && player.inCar) {
+        m.step = 1;
+        m.message = 'Nice wheels. Now bring it to the garage.';
+      } else if (m.step === 1 && player.inCar && near(player, world.garage.x, world.garage.y, 70)) {
+        return { ...finishJob(m, player), wanted: 0 };
+      }
+      break;
+    case 1: {
+      for (const d of m.drops) {
+        if (!d.taken && near(player, d.x, d.y, 46)) {
+          d.taken = true;
+          player.cash += 150;
+          sfxPickup();
+          m.message = `Cash drop collected (+$150). ${m.drops.filter((x) => !x.taken).length} left.`;
         }
       }
-    } else {
-      const d = Math.hypot(player.x - b.x, player.y - b.y);
-      const radius = player.inCar ? 24 : 15;
-      if (d < radius) {
-        damagePlayer(world, player, 5, events);
-        hit = true;
-      }
+      if (m.drops.every((d) => d.taken)) return { ...finishJob(m, player), wanted: 0 };
+      break;
     }
-    if (!hit) kept.push(b);
+    case 2:
+      if (m.step === 0 && near(player, m.milo.x, m.milo.y, 60)) {
+        m.step = 1;
+        m.message = 'Milo: "Step on it — I hear sirens already."';
+      } else if (m.step === 1 && player.inCar && near(player, world.safehouse.x, world.safehouse.y, 70)) {
+        return { ...finishJob(m, player), wanted: 0 };
+      }
+      if (m.step === 1) wanted = 2;
+      break;
+    case 3:
+      if (m.step === 0 && !player.inCar && near(player, world.docks.x, world.docks.y, 70)) {
+        m.step = 1;
+        m.rivals = [
+          { x: world.docks.x - 70, y: world.docks.y - 40, hp: 3, shootAt: 0 },
+          { x: world.docks.x + 60, y: world.docks.y - 60, hp: 3, shootAt: 0 },
+          { x: world.docks.x - 40, y: world.docks.y + 70, hp: 3, shootAt: 0 },
+          { x: world.docks.x + 80, y: world.docks.y + 50, hp: 3, shootAt: 0 },
+        ];
+        m.message = 'Rivals at the docks! Space to shoot.';
+      } else if (m.step === 1 && m.rivals.length > 0 && m.rivals.every((r) => r.hp <= 0)) {
+        return { ...finishJob(m, player), wanted: 0 };
+      }
+      if (m.step === 1) wanted = 1;
+      break;
+    case 4:
+      if (m.step === 0 && near(player, world.bank.x, world.bank.y, 70)) {
+        m.step = 1;
+        m.lootGrabbed = true;
+        m.message = 'Loot grabbed! Lose the cops and get to the garage.';
+      } else if (m.step === 1 && player.inCar && near(player, world.garage.x, world.garage.y, 70)) {
+        return { ...finishJob(m, player), wanted: 0 };
+      }
+      if (m.step === 1) wanted = 3;
+      break;
+    default:
+      break;
   }
-  world.bullets = kept;
-}
-
-// A first-aid kit waits at the garage for a hurt wheelman (once per 5s).
-export function stepPickups(world, player, dt, events) {
-  void dt;
-  if (player.lastHealAt === undefined) player.lastHealAt = -99;
-  const d = Math.hypot(player.x - PLACES.garage.x, player.y - PLACES.garage.y);
-  if (d < 70 && player.hp < PLAYER.hpMax && player.hp > 0 && world.time - player.lastHealAt > 5) {
-    player.hp = Math.min(PLAYER.hpMax, player.hp + 30);
-    player.lastHealAt = world.time;
-    events.push({ type: 'heal' });
-  }
+  return { event: null, wanted };
 }

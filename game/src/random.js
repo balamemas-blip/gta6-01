@@ -1,7 +1,8 @@
-// Bahia Verde Heat — small deterministic random number generator.
-// mulberry32: tiny, fast, and fully reproducible from one seed, so the city
-// layout and every staged screenshot are identical on every run.
-export function makeRng(seed) {
+// Solmar Heat — deterministic seeded random numbers.
+// The city, traffic and pedestrians all derive from one seed, so a
+// screenshot query (?seed=N) always rebuilds the same streets.
+
+export function mulberry32(seed) {
   let a = seed >>> 0;
   return function next() {
     a |= 0;
@@ -12,17 +13,19 @@ export function makeRng(seed) {
   };
 }
 
-// Pick an element of `list` using `rng`, without bias toward either end.
-export function pick(rng, list) {
-  return list[Math.floor(rng() * list.length)];
-}
-
-// A float in [min, max) from `rng`.
 export function range(rng, min, max) {
   return min + rng() * (max - min);
 }
 
-// An integer in [min, max] from `rng`.
-export function int(rng, min, max) {
-  return min + Math.floor(rng() * (max - min + 1));
+export function pick(rng, list) {
+  return list[Math.floor(rng() * list.length)];
+}
+
+export function hashSeed(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }

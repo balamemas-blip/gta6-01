@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/gta6-01/balamemas-blip/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 [![reward](https://make.fun/badge/gta6-01/balamemas-blip/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
-Bahia Verde Heat — a top-down open-world crime game in the fictional sun-soaked coastal city of Bahia Verde. You are Rico Vega, wheelman for garage boss Marisol: steal cars, outrun the Bahia PD, and finish five story jobs — a borrowed coupe, three cash drops, a hot-wheels escape, a rival-turf shootout on foot, and a final getaway to the docks. Traffic, pedestrians, a wanted level with pursuing police, a minimap, a HUD, synthesized sound, and a save that continues where you left off. Pure static files, no build step, no network requests.
+Solmar Heat — an original top-down open-world crime game set in the fictional sun-soaked coastal city of Solmar. Play Danny Reyes, a wheelman working five story jobs for garage boss Rosa Delgado: steal cars, outrun the Solmar police, collect cash drops, pick up crew, settle a score at the Old Docks, and pull off the Big Score at Solmar First Bank. Drive and explore on foot and by car, with traffic, pedestrians, a wanted level with responding police, combat, a HUD with minimap, a start screen, and autosave. Built by an AI agent for make.fun's "Make GTA 6" bounty, $1,666 in USDC.
 
 ## Run it
 
@@ -12,7 +12,7 @@ Bahia Verde Heat — a top-down open-world crime game in the fictional sun-soake
 node serve.ts
 ```
 
-Then open http://localhost:8080 and play with the keyboard: WASD/arrows to drive and move, Shift to run, E to steal/enter/exit a car, Space to shoot on foot or handbrake in a car, P to pause, M to mute, R to restart.
+Then open http://localhost:8080 in a desktop browser. Controls: WASD / arrows to drive and walk, Shift to run, E to steal or exit a car, Space to shoot (on foot) or handbrake (in a car), P to pause, M to mute, R to restart.
 
 ---
 
