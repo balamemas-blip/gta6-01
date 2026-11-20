@@ -1,137 +1,243 @@
-// Solmar Heat — missions: the five-job story chain. A mission is a list of
-// steps; each step completes on an event (steal a car, reach a place,
-// survive N seconds, collect every cash drop). The module owns the
-// mission index, the current step, timers and the objective text.
+// Bahia Verde Heat — the five story jobs: objectives, progress, rewards
+// and the win. Each job is one step of a small state machine; a job can
+// never soft-lock, because every objective is a place or a count the player
+// can always reach again.
+import { MISSIONS, PLACES, PLAYER } from './config.js';
+import { makeCar, KIND_CIVILIAN } from './world.js';
+import { damagePlayer, nearestCar } from './player.js';
 
-import { MISSIONS, PLACES } from './config.js';
-import { dist } from './random.js';
-
-export function createMissionState() {
+export function createMissions() {
   return {
-    index: 0,
-    step: 0,
-    stepTimer: 0, // counts down for 'survive' steps
-    collected: 0,
+    index: 0, // 0..4, 5 means every job done
+    dropsCollected: 0,
+    evadeTimer: 20,
+    evadeActive: false,
+    rivalsLeft: 0,
+    rivalsSpawned: false,
+    getawaySpawned: false,
     done: false,
-    banner: '', // short toast shown when a step completes
-    bannerTimer: 0,
+    toast: '',
+    toastAt: 0,
   };
 }
 
-export function currentMission(ms) {
-  return MISSIONS[ms.index] || null;
+export function currentMission(missions) {
+  if (missions.index >= MISSIONS.length) return null;
+  return MISSIONS[missions.index];
 }
 
-export function currentStep(ms) {
-  const m = currentMission(ms);
-  return m ? m.steps[ms.step] : null;
-}
-
-export function startMission(ms, index) {
-  ms.index = index;
-  ms.step = 0;
-  ms.stepTimer = 0;
-  ms.collected = 0;
-  ms.collectedFlags = {};
-  ms.done = false;
-  const m = currentMission(ms);
-  if (m && m.steps[0].kind === 'survive') ms.stepTimer = m.steps[0].seconds;
-  return m;
-}
-
-// The marker the HUD arrow and minimap point at, or null.
-export function missionTarget(ms) {
-  const step = currentStep(ms);
-  if (!step) return null;
-  if (step.kind === 'goto') return PLACES[step.place];
-  if (step.kind === 'collect') {
-    // The first drop not yet collected — drops may be grabbed in any
-    // order, so this must skip collected ones instead of assuming the
-    // next one in list order (a player leaving the Hideout passes the
-    // Marina drop first and would otherwise soft-lock the mission).
-    for (let i = 0; i < step.places.length; i++) {
-      if (!ms.collectedFlags || !ms.collectedFlags[i]) return PLACES[step.places[i]];
-    }
-    return null;
+// The map marker the objective arrow and minimap point at right now.
+export function missionTarget(world, missions, player) {
+  const m = currentMission(missions);
+  if (!m) return null;
+  if (m.id === 1) {
+    if (player.inCar) return { x: PLACES.garage.x, y: PLACES.garage.y, label: 'Garage' };
+    const car = nearestCar(world, player.x, player.y);
+    if (car) return { x: car.x, y: car.y, label: 'Car' };
+    return { x: PLACES.start.x + 60, y: PLACES.start.y, label: 'Car' };
+  }
+  if (m.id === 2) {
+    const drop = PLACES.drops[missions.dropsCollected];
+    if (drop) return { x: drop.x, y: drop.y, label: 'Cash drop' };
+    return { x: PLACES.garage.x, y: PLACES.garage.y, label: 'Garage' };
+  }
+  if (m.id === 3) return { x: player.x, y: player.y, label: 'Stay clear!' };
+  if (m.id === 4) return { x: PLACES.turf.x, y: PLACES.turf.y, label: 'Rival turf' };
+  if (m.id === 5) {
+    if (!missions.getawaySpawned) return { x: PLACES.garage.x, y: PLACES.garage.y, label: 'Getaway car' };
+    return { x: PLACES.docks.x, y: PLACES.docks.y, label: 'Docks' };
   }
   return null;
 }
 
-export function objectiveText(ms) {
-  const m = currentMission(ms);
-  if (!m) return '';
-  const step = currentStep(ms);
-  if (!step) return m.title;
-  if (step.kind === 'stealCar') return 'Steal a car — walk up to one and press E';
-  if (step.kind === 'survive') return `Outrun the police — survive ${Math.ceil(ms.stepTimer)}s`;
-  if (step.kind === 'collect') {
-    return `Collect the cash drops (${ms.collected}/${step.places.length})`;
-  }
-  return step.text || m.title;
+export function missionProgress(missions) {
+  const m = currentMission(missions);
+  if (!m) return 'All jobs done — Bahia Verde is yours.';
+  if (m.id === 2) return `${missions.dropsCollected} / 3 cash bags`;
+  if (m.id === 3) return `Stay clear: ${Math.ceil(missions.evadeTimer)}s`;
+  if (m.id === 4) return `${6 - missions.rivalsLeft} / 6 rivals down`;
+  if (m.id === 5 && !missions.getawaySpawned) return 'Grab the getaway car at the garage';
+  return m.brief;
 }
 
-function advance(ms) {
-  const m = currentMission(ms);
-  ms.step++;
-  ms.bannerTimer = 2.4;
-  if (ms.step >= m.steps.length) {
-    ms.done = true;
-    ms.banner = `${m.title} — COMPLETE! +$${m.reward}`;
-    return 'missionDone';
+function completeMission(world, missions, player, events) {
+  const m = currentMission(missions);
+  if (!m) return;
+  player.cash += m.reward;
+  missions.toast = `Job ${m.id} done! +$${m.reward}`;
+  missions.toastAt = world.time;
+  events.push({ type: 'mission', mission: m.id, reward: m.reward });
+  missions.index += 1;
+  missions.dropsCollected = 0;
+  missions.evadeTimer = 20;
+  missions.evadeActive = false;
+  missions.rivalsSpawned = false;
+  if (missions.index >= MISSIONS.length) {
+    missions.done = true;
+    events.push({ type: 'win' });
   }
-  const next = currentStep(ms);
-  if (next.kind === 'survive') ms.stepTimer = next.seconds;
-  ms.banner = 'Next: ' + objectiveText(ms);
-  return 'stepDone';
 }
 
-// Called every frame while playing. Events: { stoleCar, playerPos, dt }.
-// Returns 'missionDone' | 'stepDone' | null.
-export function updateMissions(ms, events) {
-  const m = currentMission(ms);
-  if (!m || ms.done) return null;
-  const step = currentStep(ms);
-  if (ms.bannerTimer > 0) ms.bannerTimer -= events.dt;
-  if (step.kind === 'stealCar') {
-    if (events.stoleCar) return advance(ms);
-    return null;
+function spawnRivals(world) {
+  const rng = world.rng;
+  world.rivals = [];
+  for (let i = 0; i < 6; i += 1) {
+    const a = rng() * Math.PI * 2;
+    const d = 60 + rng() * 160;
+    world.rivals.push({
+      x: PLACES.turf.x + Math.cos(a) * d,
+      y: PLACES.turf.y + Math.sin(a) * d,
+      hp: 2,
+      angle: 0,
+      shootCooldown: 1 + rng(),
+      color: '#7a2a8a',
+      walkPhase: rng() * 6,
+    });
   }
-  if (step.kind === 'survive') {
-    ms.stepTimer -= events.dt;
-    if (ms.stepTimer <= 0) return advance(ms);
-    return null;
+}
+
+export function stepMissions(world, missions, player, dt, events) {
+  const m = currentMission(missions);
+  if (!m || missions.done) return;
+
+  if (m.id === 1 && player.inCar) {
+    const d = Math.hypot(player.x - PLACES.garage.x, player.y - PLACES.garage.y);
+    if (d < 90) completeMission(world, missions, player, events);
   }
-  if (step.kind === 'goto') {
-    const place = PLACES[step.place];
-    if (dist(events.playerPos.x, events.playerPos.y, place.x, place.y) < 64) {
-      return advance(ms);
-    }
-    return null;
-  }
-  if (step.kind === 'collect') {
-    for (let i = 0; i < step.places.length; i++) {
-      if (ms.collectedFlags && ms.collectedFlags[i]) continue;
-      const place = PLACES[step.places[i]];
-      if (dist(events.playerPos.x, events.playerPos.y, place.x, place.y) < 56) {
-        if (!ms.collectedFlags) ms.collectedFlags = {};
-        ms.collectedFlags[i] = true;
-        ms.collected++;
-        if (ms.collected >= step.places.length) return advance(ms);
-        ms.banner = `Cash drop ${ms.collected}/${step.places.length} collected!`;
-        ms.bannerTimer = 2.0;
-        return 'stepDone';
+
+  if (m.id === 2) {
+    const drop = PLACES.drops[missions.dropsCollected];
+    if (drop) {
+      const d = Math.hypot(player.x - drop.x, player.y - drop.y);
+      if (d < 46) {
+        missions.dropsCollected += 1;
+        player.cash += 150;
+        events.push({ type: 'pickup', what: 'cash bag' });
+        world.particles.push({ x: drop.x, y: drop.y, vx: 0, vy: -30, life: 0.7, max: 0.7, size: 12, color: '#37d67a', kind: 'ring' });
+        if (missions.dropsCollected >= 3) completeMission(world, missions, player, events);
       }
     }
-    return null;
   }
-  return null;
+
+  if (m.id === 3) {
+    if (!missions.evadeActive) {
+      player.wanted = Math.max(player.wanted, 3);
+      missions.evadeActive = true;
+    }
+    let nearestCop = Infinity;
+    for (const cop of world.cops) {
+      nearestCop = Math.min(nearestCop, Math.hypot(cop.x - player.x, cop.y - player.y));
+    }
+    if (nearestCop > 320 || world.cops.length === 0) {
+      missions.evadeTimer -= dt;
+      if (missions.evadeTimer <= 0) completeMission(world, missions, player, events);
+    }
+  }
+
+  if (m.id === 4) {
+    if (!missions.rivalsSpawned) {
+      // The turf fight is a street fight, not a police chase: the heat
+      // drops and the foot cops back off when it starts.
+      player.wanted = 1;
+      world.cops = world.cops.filter((c) => !c.foot);
+      // A checkpoint breather before the fight: Rico patches up.
+      player.hp = PLAYER.hpMax;
+      spawnRivals(world);
+      missions.rivalsSpawned = true;
+      missions.rivalsLeft = 6;
+    }
+    stepRivals(world, player, dt, events);
+    if (missions.rivalsLeft <= 0) completeMission(world, missions, player, events);
+  }
+
+  if (m.id === 5) {
+    if (!missions.getawaySpawned) {
+      const car = makeCar(777, PLACES.getawayCar.x, PLACES.getawayCar.y, 0, '#d84a4a', KIND_CIVILIAN, world.rng);
+      car.parked = true;
+      world.cars.push(car);
+      missions.getawaySpawned = true;
+      player.wanted = Math.max(player.wanted, 4);
+    }
+    const d = Math.hypot(player.x - PLACES.docks.x, player.y - PLACES.docks.y);
+    if (player.inCar && d < 110) completeMission(world, missions, player, events);
+  }
 }
 
-// Cash-drop markers for the 'collect' step (positions of uncollected drops).
-export function collectMarkers(ms) {
-  const step = currentStep(ms);
-  if (!step || step.kind !== 'collect') return [];
-  return step.places
-    .map((name, i) => ({ place: PLACES[name], taken: !!(ms.collectedFlags && ms.collectedFlags[i]) }))
-    .filter((m) => !m.taken);
+// Rivals strafe around the turf and shoot at the player when close.
+function stepRivals(world, player, dt, events) {
+  for (const rival of world.rivals) {
+    if (rival.hp <= 0) continue;
+    const d = Math.hypot(player.x - rival.x, player.y - rival.y);
+    rival.angle = Math.atan2(player.y - rival.y, player.x - rival.x);
+    rival.walkPhase += dt * 6;
+    if (d > 200) {
+      rival.x += Math.cos(rival.angle) * 90 * dt;
+      rival.y += Math.sin(rival.angle) * 90 * dt;
+    } else if (d < 110) {
+      rival.x -= Math.cos(rival.angle) * 60 * dt;
+      rival.y -= Math.sin(rival.angle) * 60 * dt;
+    }
+    rival.shootCooldown -= dt;
+    if (rival.shootCooldown <= 0 && d < 380) {
+      rival.shootCooldown = 1.4 + world.rng() * 1.0;
+      const spread = (world.rng() - 0.5) * 0.5;
+      const a = rival.angle + spread;
+      world.bullets.push({
+        x: rival.x + Math.cos(a) * 20,
+        y: rival.y + Math.sin(a) * 20,
+        vx: Math.cos(a) * 380,
+        vy: Math.sin(a) * 380,
+        life: 1.1,
+        friendly: false,
+      });
+      events.push({ type: 'enemyShot' });
+    }
+  }
+}
+
+// Bullets fly, hit rivals / the player / buildings, and spark out.
+export function stepBullets(world, missions, player, dt, events) {
+  const kept = [];
+  for (const b of world.bullets) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    if (b.life <= 0) continue;
+    let hit = false;
+    if (b.friendly) {
+      for (const rival of world.rivals) {
+        if (rival.hp > 0 && Math.hypot(rival.x - b.x, rival.y - b.y) < 18) {
+          rival.hp -= PLAYER.bulletDamage;
+          hit = true;
+          world.particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.3, max: 0.3, size: 8, color: '#ff5a5a', kind: 'spark' });
+          if (rival.hp <= 0) {
+            missions.rivalsLeft = Math.max(0, missions.rivalsLeft - 1);
+            events.push({ type: 'rivalDown' });
+          }
+          break;
+        }
+      }
+    } else {
+      const d = Math.hypot(player.x - b.x, player.y - b.y);
+      const radius = player.inCar ? 24 : 15;
+      if (d < radius) {
+        damagePlayer(world, player, 5, events);
+        hit = true;
+      }
+    }
+    if (!hit) kept.push(b);
+  }
+  world.bullets = kept;
+}
+
+// A first-aid kit waits at the garage for a hurt wheelman (once per 5s).
+export function stepPickups(world, player, dt, events) {
+  void dt;
+  if (player.lastHealAt === undefined) player.lastHealAt = -99;
+  const d = Math.hypot(player.x - PLACES.garage.x, player.y - PLACES.garage.y);
+  if (d < 70 && player.hp < PLAYER.hpMax && player.hp > 0 && world.time - player.lastHealAt > 5) {
+    player.hp = Math.min(PLAYER.hpMax, player.hp + 30);
+    player.lastHealAt = world.time;
+    events.push({ type: 'heal' });
+  }
 }

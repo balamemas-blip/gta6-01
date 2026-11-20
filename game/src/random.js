@@ -1,7 +1,7 @@
-// Solmar Heat — random: a tiny seeded generator so a fixed seed replays
-// the same city, traffic and pedestrians every time.
-
-export function mulberry32(seed) {
+// Bahia Verde Heat — small deterministic random number generator.
+// mulberry32: tiny, fast, and fully reproducible from one seed, so the city
+// layout and every staged screenshot are identical on every run.
+export function makeRng(seed) {
   let a = seed >>> 0;
   return function next() {
     a |= 0;
@@ -12,34 +12,17 @@ export function mulberry32(seed) {
   };
 }
 
+// Pick an element of `list` using `rng`, without bias toward either end.
 export function pick(rng, list) {
   return list[Math.floor(rng() * list.length)];
 }
 
+// A float in [min, max) from `rng`.
 export function range(rng, min, max) {
   return min + rng() * (max - min);
 }
 
-export function intRange(rng, min, max) {
+// An integer in [min, max] from `rng`.
+export function int(rng, min, max) {
   return min + Math.floor(rng() * (max - min + 1));
-}
-
-export function clamp(v, min, max) {
-  return v < min ? min : v > max ? max : v;
-}
-
-export function dist(ax, ay, bx, by) {
-  return Math.hypot(ax - bx, ay - by);
-}
-
-export function angleTo(ax, ay, bx, by) {
-  return Math.atan2(by - ay, bx - ax);
-}
-
-// Smallest signed turn from angle a to angle b, in (-PI, PI].
-export function angleDiff(a, b) {
-  let d = (b - a) % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return d;
 }

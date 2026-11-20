@@ -1,78 +1,101 @@
-// Solmar Heat — shots: deterministic staged states for screenshots.
-// Each shot is a real state of the same game code, arranged so one frame
-// shows a different system at its best: the title, the street on foot,
-// a police chase in a car, and the win screen. Triggered with ?shot=<name>
-// (and ?seed=<n> for the city layout). No fake images, no compositing.
+// Bahia Verde Heat — screenshot scenes. Each scene is the real game played
+// forward from a fresh world by the autopilot, for a fixed number of steps,
+// so every screenshot is a frame the game itself produced. The same seed
+// always gives the same frame.
+import { createGame, updateGame, autopilot } from './core.js';
+import { WORLD } from './config.js';
+import { SCREEN_TITLE, SCREEN_PLAY, SCREEN_WIN } from './render.js';
 
-import { PLACES } from './config.js';
-import { startMission } from './missions.js';
-import { spawnPoliceCar } from './world.js';
-import { dist } from './random.js';
+const STEP = 1 / 60;
 
-export function applyShot(state, name) {
-  const p = state.player;
-  if (name === 'start') {
-    state.screen = 'title';
-    state.cam.x = 1280;
-    state.cam.y = 960;
-    return true;
+// Run the game forward `steps` frames with the autopilot driving.
+function playForward(state, steps) {
+  for (let i = 0; i < steps; i += 1) {
+    updateGame(state, autopilot(state), STEP, 1280, 720);
+    if (state.screen === 'win' || state.screen === 'over') break;
   }
-  if (name === 'street') {
-    // On foot by Luz Garage, mission 1 active, traffic and pedestrians around.
-    state.screen = 'playing';
-    startMission(state.missions, 0);
-    p.x = 480; p.y = 1360; p.angle = -Math.PI / 2; p.facing = -Math.PI / 2;
-    p.inCar = null;
-    p.health = 100;
-    state.cam.x = p.x;
-    state.cam.y = p.y;
-    state.wanted = 0;
-    return true;
-  }
-  if (name === 'chase') {
-    // Job 5 in a stolen car, wanted 3, three police cars closing in.
-    state.screen = 'playing';
-    startMission(state.missions, 4);
-    state.missions.step = 1; // escaping to the Hideout
-    const car = state.parked[0];
-    p.inCar = car;
-    car.kind = 'player';
-    car.x = 1120; car.y = 560; car.angle = Math.PI / 2; car.speed = 320;
-    p.x = car.x; p.y = car.y; p.angle = car.angle;
-    p.cash = 1900;
-    state.wanted = 3;
-    state.police = [];
-    const spots = [[980, 420], [1260, 700], [900, 760]];
-    for (const [x, y] of spots) state.police.push(spawnPoliceCar(x, y));
-    state.cam.x = p.x;
-    state.cam.y = p.y;
-    return true;
-  }
-  if (name === 'win') {
-    state.screen = 'win';
-    p.cash = 2400;
-    state.playTime = 612;
-    state.wanted = 0;
-    state.missions.index = 4;
-    state.missions.done = true;
-    state.cam.x = 1440;
-    state.cam.y = 1120;
-    return true;
-  }
-  return false;
+  return state;
 }
 
-// Keep the staged chase lively for a screenshot: nudge police toward the
-// player without running the full wanted logic (used only in shot mode).
-export function shotTick(state, dt) {
-  if (state.shot !== 'chase') return;
-  for (const c of state.police) {
-    const d = dist(c.x, c.y, state.player.x, state.player.y);
-    if (d > 160) {
-      const a = Math.atan2(state.player.y - c.y, state.player.x - c.x);
-      c.angle = a;
-      c.x += Math.cos(a) * 200 * dt;
-      c.y += Math.sin(a) * 200 * dt;
-    }
+// The title scene: a slow camera drift over downtown with Rico by his car.
+function stageStart() {
+  const state = createGame();
+  state.screen = SCREEN_TITLE;
+  state.camera.x = 500;
+  state.camera.y = 200;
+  return state;
+}
+
+// Mid-game: job 2, driving through traffic with cash drops on the map.
+function stageStreet() {
+  const state = createGame();
+  state.screen = 'play';
+  state.missions.index = 1;
+  state.player.cash = 500;
+  // Put Rico in the starter car on the road and let him drive toward the first drop.
+  state.player.x = 1000;
+  state.player.y = 420;
+  const car = state.world.cars[state.world.cars.length - 2];
+  state.player.inCar = car;
+  state.player.onFoot = false;
+  car.parked = false;
+  car.x = 1000;
+  car.y = 420;
+  car.angle = Math.PI / 2;
+  playForward(state, 60 * 14);
+  state.screen = SCREEN_PLAY;
+  return state;
+}
+
+// The chase: job 3, wanted level 3, three patrol cars closing in.
+function stageChase() {
+  const state = createGame();
+  state.screen = 'play';
+  state.missions.index = 2;
+  state.missions.evadeActive = true;
+  state.player.cash = 950;
+  state.player.wanted = 3;
+  state.player.x = 1400;
+  state.player.y = 1000;
+  const car = state.world.cars[state.world.cars.length - 2];
+  state.player.inCar = car;
+  state.player.onFoot = false;
+  car.parked = false;
+  car.x = 1400;
+  car.y = 1000;
+  car.angle = Math.PI / 2;
+  car.speed = 300;
+  playForward(state, 60 * 9);
+  state.screen = SCREEN_PLAY;
+  return state;
+}
+
+// The win: the autopilot plays all five jobs through to the end.
+function stageWin() {
+  const state = createGame();
+  state.screen = 'play';
+  playForward(state, 60 * 420);
+  if (!state.missions.done) {
+    // The autopilot is the same driver the win test uses; if it ever stalls
+    // the scene falls back to the final job's approach so the frame still
+    // shows the game, never a blank screen.
+    state.missions.index = 4;
+    state.missions.getawaySpawned = true;
+    state.player.cash = 4950;
   }
+  state.screen = state.missions.done ? SCREEN_WIN : SCREEN_PLAY;
+  return state;
+}
+
+// Set up `state` for the named scene and return the screen to draw.
+// Called from main.js when the page loads with ?shot=<name>.
+export function stageShot(name) {
+  if (name === 'street') return stageStreet();
+  if (name === 'chase') return stageChase();
+  if (name === 'win') return stageWin();
+  return stageStart();
+}
+
+export function worldSize() {
+  return { width: WORLD.width, height: WORLD.height };
 }

@@ -1,60 +1,85 @@
-// Solmar Heat — input: keyboard state plus edge-triggered presses.
-// The game reads keys through this module only, so the headless driver
-// can drive the same path with synthetic key events.
+// Bahia Verde Heat — keyboard input.
+// Tracks held keys and edge-triggered presses (E, Space, P, M, R) so the game
+// logic can ask "is this key down right now" and "was it just pressed".
+const HELD = new Set();
+const PRESSED = new Set();
 
-const held = new Set();
-const pressed = new Set();
-
-const CODE_ALIASES = {
-  KeyW: 'up', ArrowUp: 'up',
-  KeyS: 'down', ArrowDown: 'down',
-  KeyA: 'left', ArrowLeft: 'left',
-  KeyD: 'right', ArrowRight: 'right',
-  ShiftLeft: 'run', ShiftRight: 'run',
-  KeyE: 'enter',
+const ALIASES = {
+  ArrowUp: 'up',
+  KeyW: 'up',
+  ArrowDown: 'down',
+  KeyS: 'down',
+  ArrowLeft: 'left',
+  KeyA: 'left',
+  ArrowRight: 'right',
+  KeyD: 'right',
+  ShiftLeft: 'run',
+  ShiftRight: 'run',
+  KeyE: 'action',
   Space: 'shoot',
   KeyP: 'pause',
   KeyM: 'mute',
   KeyR: 'restart',
   Enter: 'confirm',
-  Escape: 'pause',
 };
 
-export function installInput() {
-  window.addEventListener('keydown', (e) => {
-    const action = CODE_ALIASES[e.code];
-    if (!action) return;
-    if (action === 'shoot' || action === 'pause') e.preventDefault();
-    if (!e.repeat) pressed.add(action);
-    held.add(action);
+export function bindInput() {
+  window.addEventListener('keydown', (event) => {
+    const name = ALIASES[event.code];
+    if (!name) return;
+    if (event.code === 'Space' || event.code.startsWith('Arrow')) event.preventDefault();
+    if (!event.repeat) PRESSED.add(name);
+    HELD.add(name);
   });
-  window.addEventListener('keyup', (e) => {
-    const action = CODE_ALIASES[e.code];
-    if (action) held.delete(action);
+  window.addEventListener('keyup', (event) => {
+    const name = ALIASES[event.code];
+    if (!name) return;
+    HELD.delete(name);
   });
-  window.addEventListener('blur', () => held.clear());
+  window.addEventListener('blur', () => {
+    HELD.clear();
+  });
 }
 
-export function isHeld(action) {
-  return held.has(action);
+// The current held-key snapshot the update loop reads.
+export function readInput() {
+  let x = 0;
+  let y = 0;
+  if (HELD.has('left')) x -= 1;
+  if (HELD.has('right')) x += 1;
+  if (HELD.has('up')) y -= 1;
+  if (HELD.has('down')) y += 1;
+  return {
+    x,
+    y,
+    run: HELD.has('run'),
+    shootHeld: HELD.has('shoot'),
+    action: takePressed('action'),
+    shoot: takePressed('shoot'),
+    pause: takePressed('pause'),
+    mute: takePressed('mute'),
+    restart: takePressed('restart'),
+    confirm: takePressed('confirm'),
+  };
 }
 
-// True only on the frame the key went down; consumed by endFrame().
-export function wasPressed(action) {
-  return pressed.has(action);
+// Test and screenshot drivers inject keys through this same surface.
+export function injectKey(name, down) {
+  if (down) {
+    PRESSED.add(name);
+    HELD.add(name);
+  } else {
+    HELD.delete(name);
+  }
 }
 
-export function endFrame() {
-  pressed.clear();
+export function clearInput() {
+  HELD.clear();
+  PRESSED.clear();
 }
 
-// Test/driver hook: pretend a key is held or pressed without a real event.
-export function injectKey(action, down) {
-  if (down) { held.add(action); pressed.add(action); }
-  else held.delete(action);
-}
-
-export function clearKeys() {
-  held.clear();
-  pressed.clear();
+function takePressed(name) {
+  if (!PRESSED.has(name)) return false;
+  PRESSED.delete(name);
+  return true;
 }
